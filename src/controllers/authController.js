@@ -6,6 +6,9 @@ const db = require('../config/db');
 const { sendSMS } = require('../services/sms');
 const { sendEmail } = require('../services/email');
 
+// =====================================================
+// GÉNÉRATION OTP
+// =====================================================
 const generateOTP = () =>
   Math.floor(100000 + Math.random() * 900000).toString();
 
@@ -15,8 +18,6 @@ const generateOTP = () =>
 const register = async (req, res) => {
   const { name, email, password, phone } = req.body;
 
-  console.log('📥 INSCRIPTION REÇUE');
-
   try {
     // Vérification des champs obligatoires
     if (!name || !email || !password) {
@@ -25,28 +26,43 @@ const register = async (req, res) => {
       });
     }
 
-    console.log('🔎 Vérification de l\'email...');
+    const normalizedName = name.trim();
+    const normalizedEmail = email.trim().toLowerCase();
+    const normalizedPhone = phone ? phone.trim() : null;
 
-    // Vérifier si l'utilisateur existe déjà
+    // Vérifier si l'email ou le téléphone existe déjà
     const existing = await db.query(
-      'SELECT id FROM users WHERE email = $1',
-      [email]
+      `SELECT id, email, phone
+       FROM users
+       WHERE email = $1
+          OR ($2 IS NOT NULL AND phone = $2)
+       LIMIT 1`,
+      [normalizedEmail, normalizedPhone]
     );
 
     if (existing.rows.length > 0) {
-      console.log('⚠️ Email déjà utilisé');
+      const existingUser = existing.rows[0];
 
-      return res.status(409).json({
-        error: 'Email déjà utilisé',
-      });
+      // Email déjà utilisé
+      if (existingUser.email === normalizedEmail) {
+        return res.status(409).json({
+          error: 'Cet email est déjà utilisé',
+        });
+      }
+
+      // Téléphone déjà utilisé
+      if (
+        normalizedPhone &&
+        existingUser.phone === normalizedPhone
+      ) {
+        return res.status(409).json({
+          error: 'Ce numéro de téléphone est déjà utilisé',
+        });
+      }
     }
-
-    console.log('🔐 Hash du mot de passe...');
 
     // Hash du mot de passe
     const hash = await bcrypt.hash(password, 12);
-
-    console.log('💾 Création de l\'utilisateur...');
 
     // Création de l'utilisateur
     const result = await db.query(
@@ -59,29 +75,25 @@ const register = async (req, res) => {
       VALUES ($1, $2, $3, $4)
       RETURNING id, name, email, phone`,
       [
-        name.trim(),
-        email.trim().toLowerCase(),
+        normalizedName,
+        normalizedEmail,
         hash,
-        phone || null,
+        normalizedPhone,
       ]
     );
 
     const user = result.rows[0];
 
-    console.log('✅ Utilisateur créé :', user.id);
-
-    // Vérifier que JWT_SECRET existe
+    // Vérifier JWT_SECRET
     if (!process.env.JWT_SECRET) {
-      console.error('❌ JWT_SECRET n\'est pas configuré');
+      console.error('❌ JWT_SECRET non configuré');
 
       return res.status(500).json({
         error: 'Configuration serveur JWT manquante',
       });
     }
 
-    console.log('🔑 Génération du token...');
-
-    // Génération du JWT
+    // Génération du token JWT
     const token = jwt.sign(
       {
         userId: user.id,
@@ -92,7 +104,7 @@ const register = async (req, res) => {
       }
     );
 
-    console.log('🎉 Inscription terminée avec succès');
+    console.log('✅ Inscription réussie :', user.email);
 
     return res.status(201).json({
       message: 'Inscription réussie',
@@ -103,16 +115,28 @@ const register = async (req, res) => {
   } catch (err) {
     console.error('❌ ERREUR INSCRIPTION :', err);
 
-    // Erreur PostgreSQL : email déjà utilisé
+    // Gestion des doublons PostgreSQL
     if (err.code === '23505') {
+
+      if (err.constraint === 'users_phone_key') {
+        return res.status(409).json({
+          error: 'Ce numéro de téléphone est déjà utilisé',
+        });
+      }
+
+      if (err.constraint === 'users_email_key') {
+        return res.status(409).json({
+          error: 'Cet email est déjà utilisé',
+        });
+      }
+
       return res.status(409).json({
-        error: 'Cet email ou numéro de téléphone est déjà utilisé',
+        error: 'Ces informations existent déjà',
       });
     }
 
     return res.status(500).json({
       error: 'Erreur lors de l\'inscription',
-      details: err.message,
     });
   }
 };
@@ -130,9 +154,11 @@ const login = async (req, res) => {
       });
     }
 
+    const normalizedEmail = email.trim().toLowerCase();
+
     const result = await db.query(
       'SELECT * FROM users WHERE email = $1',
-      [email.trim().toLowerCase()]
+      [normalizedEmail]
     );
 
     if (!result.rows.length) {
@@ -143,6 +169,7 @@ const login = async (req, res) => {
 
     const user = result.rows[0];
 
+    // Vérifier le mot de passe
     const valid = await bcrypt.compare(
       password,
       user.password_hash
@@ -154,12 +181,16 @@ const login = async (req, res) => {
       });
     }
 
+    // Vérifier JWT_SECRET
     if (!process.env.JWT_SECRET) {
+      console.error('❌ JWT_SECRET non configuré');
+
       return res.status(500).json({
         error: 'Configuration serveur JWT manquante',
       });
     }
 
+    // Génération du token
     const token = jwt.sign(
       {
         userId: user.id,
@@ -170,7 +201,7 @@ const login = async (req, res) => {
       }
     );
 
-    // Ne jamais envoyer le hash du mot de passe
+    // Ne jamais retourner le hash du mot de passe
     const {
       password_hash,
       ...safeUser
@@ -187,7 +218,6 @@ const login = async (req, res) => {
 
     return res.status(500).json({
       error: 'Erreur connexion',
-      details: err.message,
     });
   }
 };
@@ -205,11 +235,13 @@ const sendSMSOTP = async (req, res) => {
   }
 
   const code = generateOTP();
+
   const expiresAt = new Date(
     Date.now() + 10 * 60 * 1000
   );
 
   try {
+    // Supprimer les anciens OTP SMS
     await db.query(
       `DELETE FROM otp_verifications
        WHERE identifier = $1
@@ -217,6 +249,7 @@ const sendSMSOTP = async (req, res) => {
       [phone, 'sms']
     );
 
+    // Enregistrer le nouvel OTP
     await db.query(
       `INSERT INTO otp_verifications (
         identifier,
@@ -228,6 +261,7 @@ const sendSMSOTP = async (req, res) => {
       [phone, code, expiresAt]
     );
 
+    // Envoyer le SMS
     await sendSMS(
       phone,
       `Votre code de vérification Device Tracker : ${code}. Valable 10 minutes.`
@@ -238,11 +272,10 @@ const sendSMSOTP = async (req, res) => {
     });
 
   } catch (err) {
-    console.error('❌ ERREUR SMS OTP :', err);
+    console.error('❌ ERREUR ENVOI SMS :', err);
 
     return res.status(500).json({
       error: 'Erreur envoi SMS',
-      details: err.message,
     });
   }
 };
@@ -259,19 +292,24 @@ const sendEmailOTP = async (req, res) => {
     });
   }
 
+  const normalizedEmail = email.trim().toLowerCase();
+
   const code = generateOTP();
+
   const expiresAt = new Date(
     Date.now() + 15 * 60 * 1000
   );
 
   try {
+    // Supprimer les anciens OTP email
     await db.query(
       `DELETE FROM otp_verifications
        WHERE identifier = $1
        AND type = $2`,
-      [email, 'email']
+      [normalizedEmail, 'email']
     );
 
+    // Enregistrer le nouvel OTP
     await db.query(
       `INSERT INTO otp_verifications (
         identifier,
@@ -280,19 +318,30 @@ const sendEmailOTP = async (req, res) => {
         expires_at
       )
       VALUES ($1, $2, 'email', $3)`,
-      [email, code, expiresAt]
+      [
+        normalizedEmail,
+        code,
+        expiresAt,
+      ]
     );
 
+    // Envoyer l'email
     await sendEmail(
-      email,
+      normalizedEmail,
       'Votre code de vérification',
       `
         <h2>Device Tracker</h2>
+
         <p>
           Votre code de vérification est :
-          <strong style="font-size:24px">${code}</strong>
+          <strong style="font-size:24px">
+            ${code}
+          </strong>
         </p>
-        <p>Ce code est valable 15 minutes.</p>
+
+        <p>
+          Ce code est valable pendant 15 minutes.
+        </p>
       `
     );
 
@@ -301,11 +350,10 @@ const sendEmailOTP = async (req, res) => {
     });
 
   } catch (err) {
-    console.error('❌ ERREUR EMAIL OTP :', err);
+    console.error('❌ ERREUR ENVOI EMAIL :', err);
 
     return res.status(500).json({
       error: 'Erreur envoi email',
-      details: err.message,
     });
   }
 };
@@ -348,6 +396,7 @@ const verifyOTP = async (req, res) => {
       });
     }
 
+    // Marquer l'OTP comme utilisé
     await db.query(
       `UPDATE otp_verifications
        SET used = true
@@ -365,7 +414,6 @@ const verifyOTP = async (req, res) => {
 
     return res.status(500).json({
       error: 'Erreur vérification OTP',
-      details: err.message,
     });
   }
 };
