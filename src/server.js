@@ -18,6 +18,10 @@ const trackingRoutes = require('./routes/tracking');
 const { setupWebSocket } = require('./services/websocket');
 
 const app = express();
+
+// Render est derrière un reverse proxy
+app.set('trust proxy', 1);
+
 const server = http.createServer(app);
 
 // WebSocket server
@@ -66,7 +70,7 @@ async function start() {
     await connectRedis();
     server.listen(PORT, () => {
       console.log(`🚀 Serveur démarré sur le port ${PORT}`);
-      console.log(`📡 WebSocket disponible sur ws://192.168.137.3:${PORT}/ws`);
+     console.log(`📡 WebSocket disponible sur /ws`);
     });
   } catch (err) {
     console.error('Erreur démarrage:', err);

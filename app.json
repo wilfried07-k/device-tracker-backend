@@ -1,0 +1,12 @@
+{
+  "expo": {
+    "extra": {
+      "eas": {
+        "projectId": "3b471525-1ae2-4d26-98de-7cda33843bea"
+      }
+    },
+    "android": {
+      "package": "com.wilfiriedkana.devicetrackerbackend"
+    }
+  }
+}
