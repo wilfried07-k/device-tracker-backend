@@ -29,15 +29,16 @@ const register = async (req, res) => {
     const normalizedName = name.trim();
     const normalizedEmail = email.trim().toLowerCase();
     const normalizedPhone = phone ? phone.trim() : null;
+    const phoneCheck = normalizedPhone ?? '';
 
     // Vérifier si l'email ou le téléphone existe déjà
     const existing = await db.query(
       `SELECT id, email, phone
        FROM users
        WHERE email = $1
-          OR ($2 IS NOT NULL AND phone = $2)
+          OR (phone IS NOT NULL AND phone = $2)
        LIMIT 1`,
-      [normalizedEmail, normalizedPhone]
+      [normalizedEmail, phoneCheck]
     );
 
     if (existing.rows.length > 0) {
